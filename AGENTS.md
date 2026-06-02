@@ -20,6 +20,13 @@ This repository builds scripts that identify tenants with missing or partial hou
 - Package manager: npm.
 - External libraries: allowed when reliable and justified.
 
+## Runtime Enforcement (Hard Rule)
+- Python is strictly forbidden in this repository.
+- Never use Python for any reason, including temporary calculations, ad-hoc scripts, one-liners, data inspection, or file conversion.
+- Never run Python-related tools or commands (for example: `python`, `py`, `pip`, `pip3`, `uv`, `poetry`).
+- Always use Node.js only (`node`, npm scripts, or TypeScript tooling) for every task.
+- If an operation is typically done with Python, implement the equivalent in Node.js instead.
+
 ## Workflow Expectations
 - No pull request workflow is required at this stage.
 - Tests are not required yet.
