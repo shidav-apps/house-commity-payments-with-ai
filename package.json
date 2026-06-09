@@ -5,7 +5,9 @@
   "type": "module",
   "description": "Scripts that identify tenants with missing or partial house committee payments.",
   "scripts": {
-    "generate:registry": "tsx src/generate-registry.ts"
+    "generate:registry": "tsx src/generate-registry.ts",
+    "fill:apartments": "tsx src/fill-missing-apartments.ts",
+    "start": "npm run generate:registry && npm run fill:apartments"
   },
   "engines": {
     "node": ">=22"
