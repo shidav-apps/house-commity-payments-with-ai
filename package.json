@@ -1,0 +1,21 @@
+{
+  "name": "house-commity-payments-with-ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Scripts that identify tenants with missing or partial house committee payments.",
+  "scripts": {
+    "generate:registry": "tsx src/generate-registry.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "xlsx": "0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
