@@ -5,6 +5,8 @@ import XLSX from "xlsx";
 import type {
   ApartmentDetails,
   ApartmentNumber,
+  Tennancy,
+  TennacyType,
   TenantName,
   TennatsRegistery,
 } from "./tennats-registery.model.ts";
@@ -30,6 +32,8 @@ const TENANT_COL = {
 const PAYMENT_COL = {
   apartment: "דירה",
   extendedDescription: "תאור מורחב",
+  houseCommittee: "וועד בית",
+  renovationFund: "קרן שיפוצים",
 } as const;
 
 type SheetRow = Record<string, unknown>;
@@ -85,13 +89,28 @@ function readSheetRows(filePath: string): SheetRow[] {
 }
 
 /**
- * Registry accumulator. Tracks each resident's apartment and reports any
- * conflicting assignments (same person linked to two different apartments).
+ * Registry accumulator.
+ *
+ * Tenancy type per tenant is derived from two sources, in priority order:
+ * 1. Tenant list (`tennants-list.xlsx`): an explicit owner/tenant column says
+ *    whether the person is an Owner or a Renter. For a non-rented apartment the
+ *    only listed resident (the owner) pays Both.
+ * 2. Payment history (`payment-history.xlsx`): for payers that never appear in
+ *    the tenant list, the tenancy type is inferred from which charge types they
+ *    actually paid (taxes only -> Renter, renovation only -> Owner, both -> Both).
+ *    Payers in a non-rented apartment always pay Both.
+ *
+ * It also reports conflicting assignments (same person linked to two apartments).
  */
 class RegistryBuilder {
-  private readonly tenantToApartment = new Map<TenantName, ApartmentNumber>();
+  private readonly tenantToTennancy = new Map<TenantName, Tennancy>();
   private readonly apartments = new Set<ApartmentNumber>();
   private readonly apartmentDetails = new Map<ApartmentNumber, ApartmentDetails>();
+  /** Payers seen only in payment history, with the charge types they paid. */
+  private readonly paymentOnlyPayers = new Map<
+    TenantName,
+    { apartment: ApartmentNumber; paidTaxes: boolean; paidRenovation: boolean }
+  >();
   readonly warnings: string[] = [];
 
   addApartment(apartment: ApartmentNumber): void {
@@ -103,27 +122,99 @@ class RegistryBuilder {
     this.apartmentDetails.set(apartment, details);
   }
 
-  addResident(name: TenantName, apartment: ApartmentNumber, source: string): void {
+  /** Record a tenant whose tenancy type is known explicitly from the tenant list. */
+  addListedTenant(
+    name: TenantName,
+    apartment: ApartmentNumber,
+    tennancyType: TennacyType,
+    source: string,
+  ): void {
     this.addApartment(apartment);
-    const existing = this.tenantToApartment.get(name);
+    const existing = this.tenantToTennancy.get(name);
     if (existing === undefined) {
-      this.tenantToApartment.set(name, apartment);
+      this.tenantToTennancy.set(name, { apartmentNumber: apartment, tennancyType });
       return;
     }
-    if (existing !== apartment) {
+    if (existing.apartmentNumber !== apartment) {
       this.warnings.push(
-        `"${name}" is linked to apartment ${existing} and ${apartment} (kept ${existing}; ignored ${source} apartment ${apartment}).`,
+        `"${name}" is linked to apartment ${existing.apartmentNumber} and ${apartment} (kept ${existing.apartmentNumber}; ignored ${source} apartment ${apartment}).`,
       );
     }
   }
 
+  /**
+   * Record a payment made by a payer parsed from the payment history. If the
+   * payer is already known from the tenant list, the tenant list wins and only
+   * an apartment conflict is reported. Otherwise the paid charge types are
+   * accumulated so the tenancy type can be inferred later in build().
+   */
+  addPaymentPayer(
+    name: TenantName,
+    apartment: ApartmentNumber,
+    paidTaxes: boolean,
+    paidRenovation: boolean,
+  ): void {
+    this.addApartment(apartment);
+
+    const listed = this.tenantToTennancy.get(name);
+    if (listed !== undefined) {
+      if (listed.apartmentNumber !== apartment) {
+        this.warnings.push(
+          `"${name}" is linked to apartment ${listed.apartmentNumber} and ${apartment} (kept ${listed.apartmentNumber}; ignored payment-history apartment ${apartment}).`,
+        );
+      }
+      return;
+    }
+
+    const existing = this.paymentOnlyPayers.get(name);
+    if (existing === undefined) {
+      this.paymentOnlyPayers.set(name, { apartment, paidTaxes, paidRenovation });
+      return;
+    }
+    if (existing.apartment !== apartment) {
+      this.warnings.push(
+        `"${name}" is linked to apartment ${existing.apartment} and ${apartment} (kept ${existing.apartment}; ignored payment-history apartment ${apartment}).`,
+      );
+      return;
+    }
+    existing.paidTaxes = existing.paidTaxes || paidTaxes;
+    existing.paidRenovation = existing.paidRenovation || paidRenovation;
+  }
+
+  /** Infer tenancy type for payers that only appear in the payment history. */
+  private resolvePaymentOnlyPayers(): void {
+    for (const [name, payer] of this.paymentOnlyPayers) {
+      const isRent = this.apartmentDetails.get(payer.apartment)?.isRent ?? false;
+      let tennancyType: TennacyType;
+      if (!isRent) {
+        tennancyType = "Both";
+      } else if (payer.paidTaxes && payer.paidRenovation) {
+        tennancyType = "Both";
+      } else if (payer.paidTaxes) {
+        tennancyType = "Renter";
+      } else if (payer.paidRenovation) {
+        tennancyType = "Owner";
+      } else {
+        tennancyType = "Both";
+        this.warnings.push(
+          `"${name}" (apartment ${payer.apartment}) has payment history but no recognizable taxes or renovation charge; defaulted to Both.`,
+        );
+      }
+      this.tenantToTennancy.set(name, {
+        apartmentNumber: payer.apartment,
+        tennancyType,
+      });
+    }
+  }
+
   build(): TennatsRegistery {
+    this.resolvePaymentOnlyPayers();
     return {
-      "all-tenants": [...this.tenantToApartment.keys()].sort((a, b) =>
+      "all-tenants": [...this.tenantToTennancy.keys()].sort((a, b) =>
         a.localeCompare(b, "he"),
       ),
       "all-apartments": [...this.apartments].sort((a, b) => a - b),
-      "tenant-apartment-map": Object.fromEntries(this.tenantToApartment),
+      "tenant-apartment-map": Object.fromEntries(this.tenantToTennancy),
       "apartment-detils": Object.fromEntries(
         [...this.apartmentDetails.entries()].sort((a, b) => a[0] - b[0]),
       ),
@@ -149,21 +240,31 @@ function collectFromTenantList(rows: SheetRow[], builder: RegistryBuilder): void
         `Apartment ${apartment} has a missing or invalid "${TENANT_COL.renovationFund}" amount.`,
       );
     }
-    builder.setApartmentDetails(apartment, {
-      rentAmount: houseCommitteeFee ?? 0,
-      renovationFundAmount: renovationFund ?? 0,
-    });
 
     const ownerName = normalizeText(row[TENANT_COL.ownerName]);
     const tenantName = normalizeText(row[TENANT_COL.tenantName]);
 
-    // Collect both residents listed for the apartment: the owner and, when the
-    // apartment is rented, the tenant as well.
+    // The apartment is rented when a tenant (renter) name is present.
+    const isRent = tenantName !== "";
+    builder.setApartmentDetails(apartment, {
+      taxes: houseCommitteeFee ?? 0,
+      renovationFundAmount: renovationFund ?? 0,
+      isRent,
+    });
+
+    // Collect the residents listed for the apartment. When the apartment is not
+    // rented the owner pays both charges; when it is rented the owner pays the
+    // owner charge and the tenant pays the renter charge.
     if (ownerName !== "") {
-      builder.addResident(ownerName, apartment, "tenant-list (owner)");
+      builder.addListedTenant(
+        ownerName,
+        apartment,
+        isRent ? "Owner" : "Both",
+        "tenant-list (owner)",
+      );
     }
     if (tenantName !== "") {
-      builder.addResident(tenantName, apartment, "tenant-list (tenant)");
+      builder.addListedTenant(tenantName, apartment, "Renter", "tenant-list (tenant)");
     }
     if (ownerName === "" && tenantName === "") {
       builder.warnings.push(
@@ -183,13 +284,17 @@ function collectFromPaymentHistory(rows: SheetRow[], builder: RegistryBuilder): 
     if (description === "") continue;
 
     const payerName = extractPayerName(description);
-    if (payerName !== "") {
-      builder.addResident(payerName, apartment, "payment-history");
-    } else {
+    if (payerName === "") {
       builder.warnings.push(
         `Could not extract payer name from description: "${description}" (apartment ${apartment}).`,
       );
+      continue;
     }
+
+    // A positive amount in a charge column means this payment covered that charge.
+    const paidTaxes = (parseAmount(row[PAYMENT_COL.houseCommittee]) ?? 0) > 0;
+    const paidRenovation = (parseAmount(row[PAYMENT_COL.renovationFund]) ?? 0) > 0;
+    builder.addPaymentPayer(payerName, apartment, paidTaxes, paidRenovation);
   }
 }
 

@@ -14,29 +14,51 @@
     10
   ],
   "tenant-apartment-map": {
-    "יוסי גופר": 7,
-    "איציק אשר": 8,
-    "עינת ברכה": 8,
-    "אדם סנדלר": 10,
-    "קובי הרי": 7,
-    "ניר פלג": 9
+    "יוסי גופר": {
+      "apartmentNumber": 7,
+      "tennancyType": "Both"
+    },
+    "איציק אשר": {
+      "apartmentNumber": 8,
+      "tennancyType": "Owner"
+    },
+    "עינת ברכה": {
+      "apartmentNumber": 8,
+      "tennancyType": "Renter"
+    },
+    "אדם סנדלר": {
+      "apartmentNumber": 10,
+      "tennancyType": "Both"
+    },
+    "קובי הרי": {
+      "apartmentNumber": 7,
+      "tennancyType": "Both"
+    },
+    "ניר פלג": {
+      "apartmentNumber": 9,
+      "tennancyType": "Both"
+    }
   },
   "apartment-detils": {
     "7": {
-      "rentAmount": 1467,
-      "renovationFundAmount": 584
+      "taxes": 1467,
+      "renovationFundAmount": 584,
+      "isRent": false
     },
     "8": {
-      "rentAmount": 2640,
-      "renovationFundAmount": 1050
+      "taxes": 2640,
+      "renovationFundAmount": 1050,
+      "isRent": true
     },
     "9": {
-      "rentAmount": 2640,
-      "renovationFundAmount": 1050
+      "taxes": 2640,
+      "renovationFundAmount": 1050,
+      "isRent": false
     },
     "10": {
-      "rentAmount": 2640,
-      "renovationFundAmount": 1050
+      "taxes": 2640,
+      "renovationFundAmount": 1050,
+      "isRent": false
     }
   }
 }

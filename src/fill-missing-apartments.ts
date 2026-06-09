@@ -3,7 +3,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import XLSX from "xlsx";
 import type {
+  ApartmentDetails,
   ApartmentNumber,
+  TennacyType,
   TennatsRegistery,
 } from "./tennats-registery.model.ts";
 
@@ -18,6 +20,9 @@ const PAYMENT_HISTORY_FILE = resolve(INPUTS_DIR, "payment-history.xlsx");
 const PAYMENT_COL = {
   apartment: "דירה",
   extendedDescription: "תאור מורחב",
+  total: "בזכות",
+  houseCommittee: "ועד",
+  renovationFund: "קרן",
 } as const;
 
 /** Trim and treat whitespace-only / empty values as "no value". */
@@ -26,9 +31,33 @@ function normalizeText(value: unknown): string {
   return String(value).trim();
 }
 
+/** True when a cell holds no meaningful value. */
+function isCellEmpty(value: unknown): boolean {
+  return normalizeText(value) === "";
+}
+
 /** True when a cell holds no meaningful apartment value. */
 function isApartmentMissing(value: unknown): boolean {
-  return normalizeText(value) === "";
+  return isCellEmpty(value);
+}
+
+/** Parse an apartment identifier into a number, or null if invalid. */
+function parseApartment(value: unknown): ApartmentNumber | null {
+  const text = normalizeText(value);
+  if (text === "") return null;
+  const apartment = Number(text);
+  return Number.isFinite(apartment) ? apartment : null;
+}
+
+/**
+ * Parse a monetary value into a number, or null if invalid.
+ * Strips the currency symbol (₪) and thousands separators before parsing.
+ */
+function parseAmount(value: unknown): number | null {
+  const text = normalizeText(value).replace(/₪/g, "").replace(/,/g, "").trim();
+  if (text === "") return null;
+  const amount = Number(text);
+  return Number.isFinite(amount) ? amount : null;
 }
 
 /**
@@ -53,23 +82,64 @@ function loadRegistry(): TennatsRegistery {
   return JSON.parse(raw) as TennatsRegistery;
 }
 
+interface PaymentSplit {
+  /** Amount allocated to the house-committee (taxes) column. */
+  house: number;
+  /** Amount allocated to the renovation-fund column. */
+  renovation: number;
+}
+
+/**
+ * Split a total payment into its house-committee (taxes) and renovation-fund
+ * parts based on the payer's tenancy type:
+ * - Renter: the whole amount goes to taxes.
+ * - Owner: the whole amount goes to the renovation fund.
+ * - Both: taxes are filled up to the apartment's monthly taxes amount and the
+ *   remainder goes to the renovation fund.
+ *
+ * Returns null when a "Both" split cannot be computed because the apartment
+ * details (and therefore the taxes cap) are unknown.
+ */
+function splitPayment(
+  total: number,
+  tennancyType: TennacyType,
+  details: ApartmentDetails | undefined,
+): PaymentSplit | null {
+  switch (tennancyType) {
+    case "Renter":
+      return { house: total, renovation: 0 };
+    case "Owner":
+      return { house: 0, renovation: total };
+    case "Both": {
+      if (details === undefined) return null;
+      const house = Math.min(total, details.taxes);
+      return { house, renovation: total - house };
+    }
+  }
+}
+
 interface FillResult {
-  filled: number;
+  filledApartments: number;
+  filledSplits: number;
   warnings: string[];
 }
 
 /**
  * Fill empty apartment cells in the payment-history sheet by resolving the
- * payer name (from the extended description) against the registry map.
- * Cells are mutated in place so the rest of the workbook is preserved.
+ * payer name (from the extended description) against the registry map, and fill
+ * the taxes / renovation-fund columns by splitting the total amount according to
+ * the payer's tenancy type. Cells are mutated in place so the rest of the
+ * workbook is preserved.
  */
 function fillMissingApartments(
   sheet: XLSX.WorkSheet,
   registry: TennatsRegistery,
 ): FillResult {
-  const tenantToApartment = registry["tenant-apartment-map"];
+  const tenantToTennancy = registry["tenant-apartment-map"];
+  const apartmentDetails = registry["apartment-detils"];
   const warnings: string[] = [];
-  let filled = 0;
+  let filledApartments = 0;
+  let filledSplits = 0;
 
   const range = XLSX.utils.decode_range(sheet["!ref"] ?? "A1");
   const headerRow = range.s.r;
@@ -84,6 +154,9 @@ function fillMissingApartments(
 
   const apartmentCol = columnIndex.get(PAYMENT_COL.apartment);
   const descriptionCol = columnIndex.get(PAYMENT_COL.extendedDescription);
+  const totalCol = columnIndex.get(PAYMENT_COL.total);
+  const houseCommitteeCol = columnIndex.get(PAYMENT_COL.houseCommittee);
+  const renovationCol = columnIndex.get(PAYMENT_COL.renovationFund);
   if (apartmentCol === undefined) {
     throw new Error(`Column "${PAYMENT_COL.apartment}" not found in payment history.`);
   }
@@ -92,11 +165,31 @@ function fillMissingApartments(
       `Column "${PAYMENT_COL.extendedDescription}" not found in payment history.`,
     );
   }
+  if (totalCol === undefined) {
+    throw new Error(`Column "${PAYMENT_COL.total}" not found in payment history.`);
+  }
+  if (houseCommitteeCol === undefined) {
+    throw new Error(
+      `Column "${PAYMENT_COL.houseCommittee}" not found in payment history.`,
+    );
+  }
+  if (renovationCol === undefined) {
+    throw new Error(
+      `Column "${PAYMENT_COL.renovationFund}" not found in payment history.`,
+    );
+  }
 
   for (let r = headerRow + 1; r <= range.e.r; r++) {
     const apartmentRef = XLSX.utils.encode_cell({ r, c: apartmentCol });
-    const apartmentCell = sheet[apartmentRef];
-    if (!isApartmentMissing(apartmentCell?.v)) continue;
+    const houseRef = XLSX.utils.encode_cell({ r, c: houseCommitteeCol });
+    const renovationRef = XLSX.utils.encode_cell({ r, c: renovationCol });
+
+    const apartmentMissing = isApartmentMissing(sheet[apartmentRef]?.v);
+    const splitMissing =
+      isCellEmpty(sheet[houseRef]?.v) && isCellEmpty(sheet[renovationRef]?.v);
+
+    // Nothing to do for rows that already have an apartment and a split.
+    if (!apartmentMissing && !splitMissing) continue;
 
     const descriptionCell = sheet[XLSX.utils.encode_cell({ r, c: descriptionCol })];
     const description = normalizeText(descriptionCell?.v);
@@ -112,19 +205,49 @@ function fillMissingApartments(
       continue;
     }
 
-    const apartment: ApartmentNumber | undefined = tenantToApartment[payerName];
-    if (apartment === undefined) {
-      warnings.push(
-        `Row ${r + 1}: payer "${payerName}" not found in the registry.`,
-      );
+    const tennancy = tenantToTennancy[payerName];
+    if (tennancy === undefined) {
+      warnings.push(`Row ${r + 1}: payer "${payerName}" not found in the registry.`);
       continue;
     }
 
-    sheet[apartmentRef] = { t: "n", v: apartment };
-    filled += 1;
+    if (apartmentMissing) {
+      sheet[apartmentRef] = { t: "n", v: tennancy.apartmentNumber };
+      filledApartments += 1;
+    }
+
+    if (splitMissing) {
+      const apartment =
+        parseApartment(sheet[apartmentRef]?.v) ?? tennancy.apartmentNumber;
+      const total = parseAmount(
+        sheet[XLSX.utils.encode_cell({ r, c: totalCol })]?.v,
+      );
+      if (total === null) {
+        warnings.push(
+          `Row ${r + 1}: payer "${payerName}" has no total amount to split into taxes/renovation.`,
+        );
+        continue;
+      }
+
+      const split = splitPayment(
+        total,
+        tennancy.tennancyType,
+        apartmentDetails[apartment],
+      );
+      if (split === null) {
+        warnings.push(
+          `Row ${r + 1}: apartment ${apartment} details missing; cannot split "Both" payment for "${payerName}".`,
+        );
+        continue;
+      }
+
+      sheet[houseRef] = { t: "n", v: split.house };
+      sheet[renovationRef] = { t: "n", v: split.renovation };
+      filledSplits += 1;
+    }
   }
 
-  return { filled, warnings };
+  return { filledApartments, filledSplits, warnings };
 }
 
 function main(): void {
@@ -135,16 +258,18 @@ function main(): void {
     throw new Error("Payment history workbook has no sheets.");
   }
 
-  const { filled, warnings } = fillMissingApartments(
+  const { filledApartments, filledSplits, warnings } = fillMissingApartments(
     workbook.Sheets[sheetName],
     registry,
   );
 
-  if (filled > 0) {
+  if (filledApartments > 0 || filledSplits > 0) {
     XLSX.writeFile(workbook, PAYMENT_HISTORY_FILE);
-    console.log(`Filled ${filled} missing apartment value(s) in ${PAYMENT_HISTORY_FILE}`);
+    console.log(
+      `Filled ${filledApartments} apartment value(s) and ${filledSplits} taxes/renovation split(s) in ${PAYMENT_HISTORY_FILE}`,
+    );
   } else {
-    console.log("No missing apartment values to fill.");
+    console.log("No missing apartment or payment-split values to fill.");
   }
 
   if (warnings.length > 0) {
