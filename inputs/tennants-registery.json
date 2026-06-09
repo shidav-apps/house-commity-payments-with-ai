@@ -20,5 +20,23 @@
     "אדם סנדלר": 10,
     "קובי הרי": 7,
     "ניר פלג": 9
+  },
+  "apartment-detils": {
+    "7": {
+      "rentAmount": 1467,
+      "renovationFundAmount": 584
+    },
+    "8": {
+      "rentAmount": 2640,
+      "renovationFundAmount": 1050
+    },
+    "9": {
+      "rentAmount": 2640,
+      "renovationFundAmount": 1050
+    },
+    "10": {
+      "rentAmount": 2640,
+      "renovationFundAmount": 1050
+    }
   }
 }

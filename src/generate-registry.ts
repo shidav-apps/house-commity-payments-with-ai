@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import XLSX from "xlsx";
 import type {
+  ApartmentDetails,
   ApartmentNumber,
   TenantName,
   TennatsRegistery,
@@ -21,6 +22,8 @@ const TENANT_COL = {
   apartment: "Appt",
   ownerName: "Name",
   tenantName: "שם השוכר",
+  houseCommitteeFee: "מיסי ועד בית",
+  renovationFund: "קרן שיפוצים",
 } as const;
 
 /** Payment-history column labels (canonical keys from the source file). */
@@ -43,6 +46,17 @@ function parseApartment(value: unknown): ApartmentNumber | null {
   if (text === "") return null;
   const apartment = Number(text);
   return Number.isFinite(apartment) ? apartment : null;
+}
+
+/**
+ * Parse a monetary charge field into a non-negative number, or null if invalid.
+ * Strips the currency symbol (₪) and thousands separators before parsing.
+ */
+function parseAmount(value: unknown): number | null {
+  const text = normalizeText(value).replace(/₪/g, "").replace(/,/g, "").trim();
+  if (text === "") return null;
+  const amount = Number(text);
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
 }
 
 /**
@@ -77,10 +91,16 @@ function readSheetRows(filePath: string): SheetRow[] {
 class RegistryBuilder {
   private readonly tenantToApartment = new Map<TenantName, ApartmentNumber>();
   private readonly apartments = new Set<ApartmentNumber>();
+  private readonly apartmentDetails = new Map<ApartmentNumber, ApartmentDetails>();
   readonly warnings: string[] = [];
 
   addApartment(apartment: ApartmentNumber): void {
     this.apartments.add(apartment);
+  }
+
+  setApartmentDetails(apartment: ApartmentNumber, details: ApartmentDetails): void {
+    this.addApartment(apartment);
+    this.apartmentDetails.set(apartment, details);
   }
 
   addResident(name: TenantName, apartment: ApartmentNumber, source: string): void {
@@ -104,6 +124,9 @@ class RegistryBuilder {
       ),
       "all-apartments": [...this.apartments].sort((a, b) => a - b),
       "tenant-apartment-map": Object.fromEntries(this.tenantToApartment),
+      "apartment-detils": Object.fromEntries(
+        [...this.apartmentDetails.entries()].sort((a, b) => a[0] - b[0]),
+      ),
     };
   }
 }
@@ -113,6 +136,23 @@ function collectFromTenantList(rows: SheetRow[], builder: RegistryBuilder): void
     const apartment = parseApartment(row[TENANT_COL.apartment]);
     if (apartment === null) continue;
     builder.addApartment(apartment);
+
+    const houseCommitteeFee = parseAmount(row[TENANT_COL.houseCommitteeFee]);
+    const renovationFund = parseAmount(row[TENANT_COL.renovationFund]);
+    if (houseCommitteeFee === null) {
+      builder.warnings.push(
+        `Apartment ${apartment} has a missing or invalid "${TENANT_COL.houseCommitteeFee}" amount.`,
+      );
+    }
+    if (renovationFund === null) {
+      builder.warnings.push(
+        `Apartment ${apartment} has a missing or invalid "${TENANT_COL.renovationFund}" amount.`,
+      );
+    }
+    builder.setApartmentDetails(apartment, {
+      rentAmount: houseCommitteeFee ?? 0,
+      renovationFundAmount: renovationFund ?? 0,
+    });
 
     const ownerName = normalizeText(row[TENANT_COL.ownerName]);
     const tenantName = normalizeText(row[TENANT_COL.tenantName]);
