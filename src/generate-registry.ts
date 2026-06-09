@@ -114,15 +114,18 @@ function collectFromTenantList(rows: SheetRow[], builder: RegistryBuilder): void
     if (apartment === null) continue;
     builder.addApartment(apartment);
 
-    const tenantName = normalizeText(row[TENANT_COL.tenantName]);
     const ownerName = normalizeText(row[TENANT_COL.ownerName]);
+    const tenantName = normalizeText(row[TENANT_COL.tenantName]);
 
-    // If the apartment is rented (tenant name present), the tenant lives there;
-    // otherwise the owner lives there.
-    const resident = tenantName !== "" ? tenantName : ownerName;
-    if (resident !== "") {
-      builder.addResident(resident, apartment, "tenant-list");
-    } else {
+    // Collect both residents listed for the apartment: the owner and, when the
+    // apartment is rented, the tenant as well.
+    if (ownerName !== "") {
+      builder.addResident(ownerName, apartment, "tenant-list (owner)");
+    }
+    if (tenantName !== "") {
+      builder.addResident(tenantName, apartment, "tenant-list (tenant)");
+    }
+    if (ownerName === "" && tenantName === "") {
       builder.warnings.push(
         `Apartment ${apartment} has no owner or tenant name in the tenant list.`,
       );
